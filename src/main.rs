@@ -10,17 +10,17 @@ use eyre::WrapErr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::LocalSet};
 use tracing::{error, info};
 use url::Url;
 
-pub trait Storage: Clone {
+pub trait Storage: Clone + Send + Sync + 'static {
     fn insert(&self, key: String, value: Vec<u8>);
     fn remove(&self, key: &str) -> Option<Vec<u8>>;
     fn get(&self, key: &str) -> Option<Vec<u8>>;
 }
 
-pub trait Peers: Clone {
+pub trait Peers: Clone + Send + Sync + 'static {
     fn insert(&self, url: String);
 
     fn contains(&self, url: &str) -> bool;
@@ -32,6 +32,7 @@ pub trait Peers: Clone {
 
 #[derive(Clone)]
 struct Node<S: Storage, P: Peers> {
+    id: String,
     store: S,
     peers: P,
     client: Client,
@@ -47,6 +48,9 @@ struct InsertResponse {
 enum ReplicationAction {
     Insert { key: String, value: Vec<u8> },
     Delete { key: String },
+    Peers { peers: Vec<String> },
+    AddPeer { peer: String },
+    RemovePeer { peer: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +161,32 @@ async fn replicate(
         ReplicationAction::Delete { key } => {
             state.store.remove(&key);
         }
+        ReplicationAction::Peers { peers } => {
+            for peer in peers {
+                if peer == state.id {
+                    continue;
+                }
+                if !state.peers.contains(peer.as_str()) {
+                    state.peers.insert(peer.clone());
+                    let state = state.clone();
+                    state
+                        .replicate_to_peers(ReplicationAction::AddPeer { peer })
+                        .await;
+                }
+            }
+        }
+        ReplicationAction::AddPeer { peer } => {
+            if peer != state.id {
+                state.peers.insert(peer);
+            }
+        }
+        ReplicationAction::RemovePeer { peer } => {
+            if state.peers.remove(&peer) {
+                state
+                    .replicate_to_peers(ReplicationAction::RemovePeer { peer })
+                    .await;
+            }
+        }
     }
     StatusCode::OK
 }
@@ -170,6 +200,16 @@ async fn add_peer(
         info!("Added peer: {}", info.url);
     }
 
+    state
+        .replicate_to_peers(ReplicationAction::Peers {
+            peers: state
+                .peers
+                .iter()
+                .chain(std::iter::once(state.id.clone()))
+                .collect(),
+        })
+        .await;
+
     StatusCode::CREATED
 }
 
@@ -178,6 +218,13 @@ async fn remove_peer(
     Path(url): Path<String>,
 ) -> impl IntoResponse {
     state.peers.remove(&url);
+
+    state
+        .replicate_to_peers(ReplicationAction::RemovePeer {
+            peer: url.to_string(),
+        })
+        .await;
+
     info!("Removed peer: {}", url);
     StatusCode::NO_CONTENT
 }
@@ -255,7 +302,24 @@ impl Peers for InMemoryPeers {
 async fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
+    let listener = {
+        let mut i = 0;
+        loop {
+            let addr = format!("127.0.0.1:3{i:03}");
+            match TcpListener::bind(&addr).await {
+                Ok(listener) => {
+                    info!("Listening on http://{}", listener.local_addr()?);
+                    break listener;
+                }
+                Err(_) => {
+                    i += 1;
+                }
+            }
+        }
+    };
+
     let app_state = Node {
+        id: format!("http://{}", listener.local_addr()?),
         store: InMemoryStorage::new(),
         peers: InMemoryPeers::new(),
         client: Client::new(),
@@ -267,22 +331,6 @@ async fn main() -> eyre::Result<()> {
         .route("/peers", post(add_peer).get(list_peers))
         .route("/peers/{url}", delete(remove_peer))
         .with_state(app_state);
-
-    let listener = {
-        let mut i = 0;
-        loop {
-            let addr = format!("127.0.0.1:3{i:03}");
-            match TcpListener::bind(&addr).await {
-                Ok(listener) => {
-                    info!("Listening on {}", listener.local_addr()?);
-                    break listener;
-                }
-                Err(_) => {
-                    i += 1;
-                }
-            }
-        }
-    };
 
     axum::serve(listener, router).await?;
 
