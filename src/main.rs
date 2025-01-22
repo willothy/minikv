@@ -49,6 +49,7 @@ enum ReplicationAction {
     Insert { key: String, value: Vec<u8> },
     Delete { key: String },
     Peers { peers: Vec<String> },
+    InitChunk { pairs: Vec<(String, Vec<u8>)> },
     AddPeer { peer: String },
     RemovePeer { peer: String },
 }
@@ -160,6 +161,11 @@ async fn replicate(
         }
         ReplicationAction::Delete { key } => {
             state.store.remove(&key);
+        }
+        ReplicationAction::InitChunk { pairs } => {
+            for (key, value) in pairs {
+                state.store.insert(key, value);
+            }
         }
         ReplicationAction::Peers { peers } => {
             for peer in peers {
