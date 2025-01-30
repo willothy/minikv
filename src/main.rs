@@ -10,7 +10,7 @@ use eyre::WrapErr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::{net::TcpListener, task::LocalSet};
+use tokio::net::TcpListener;
 use tracing::{error, info};
 use url::Url;
 
@@ -308,6 +308,7 @@ impl Peers for InMemoryPeers {
 async fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
+    #[cfg(debug_assertions)]
     let listener = {
         let mut i = 0;
         loop {
@@ -323,6 +324,9 @@ async fn main() -> eyre::Result<()> {
             }
         }
     };
+
+    #[cfg(not(debug_assertions))]
+    let listener = TcpListener::bind("127.0.0.1:3000").await?;
 
     let app_state = Node {
         id: format!("http://{}", listener.local_addr()?),
