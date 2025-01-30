@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.8.2"
+axum = "0.8.1"
 eyre = "0.6.12"
 papaya = "0.1.8"
 reqwest = { version = "0.12.12", features = ["json"] }
