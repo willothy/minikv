@@ -14,12 +14,17 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 use url::Url;
 
+/// The Storage trait represents a simple key-value store backend. This could be an
+/// in-memory HashMap, an embedded database like LMDB or SQLite, or a more complex system.
 pub trait Storage: Clone + Send + Sync + 'static {
     fn insert(&self, key: String, value: Vec<u8>);
+
     fn remove(&self, key: &str) -> Option<Vec<u8>>;
+
     fn get(&self, key: &str) -> Option<Vec<u8>>;
 }
 
+/// The Peers trait represents a list of peers.
 pub trait Peers: Clone + Send + Sync + 'static {
     fn insert(&self, url: String);
 
@@ -71,7 +76,6 @@ impl<S: Storage, P: Peers> Node<S, P> {
             let client = self.client.clone();
             let action = action.clone();
 
-            // Spawn a task so we can replicate in parallel (or you could do it sequentially).
             info!("Replicating to peer: {}", peer_url);
 
             let result = client
